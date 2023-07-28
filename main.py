@@ -1,10 +1,20 @@
 import io
-
-from PIL import Image
+import logging
+import time
+from PIL import Image, ImageFile
 from aiogram import Bot, Dispatcher, types
 
 bot = Bot('token')
 dp = Dispatcher(bot)
+
+# Enable parser to avoid potential exploits with malformed images
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+# Maximum image size in pixels (width, height)
+MAX_IMAGE_SIZE = (2048, 2048)
+# Dictionary to store the number of requests each user has made in the current minute
+request_counts = {}
+# Maximum number of requests a user can make in a minute
+RATE_LIMIT = 10
 
 
 @dp.message_handler(commands=['start'])
@@ -14,23 +24,74 @@ async def start_command(message: types.Message):
 
 @dp.message_handler(content_types=types.ContentType.PHOTO)
 async def convert_photo_to_sticker(message: types.Message):
-    photo_bytes_io = await bot.download_file_by_id(message.photo[-1].file_id)
-    image = Image.open(photo_bytes_io)
-    # Calculate the ratio for resizing while keeping the aspect ratio
-    max_size = 512
-    width, height = image.size
-    if width > height:
-        ratio = max_size / float(width)
-        new_size = (max_size, int(height * ratio))
+    # Check rate limit
+    if rate_limiter(message.from_user.id):
+        # Validate file id
+        if validate_file_id(message.photo[-1].file_id):
+            photo_bytes_io = await bot.download_file_by_id(message.photo[-1].file_id)
+            try:
+                image = Image.open(photo_bytes_io)
+                # Check size before processing
+                if image.size < MAX_IMAGE_SIZE:
+                    max_size = 512
+                    width, height = image.size
+                    if width > height:
+                        ratio = max_size / float(width)
+                        new_size = (max_size, int(height * ratio))
+                    else:
+                        ratio = max_size / float(height)
+                        new_size = (int(width * ratio), max_size)
+                    image = image.resize(new_size, Image.LANCZOS)
+                    # Convert image to WebP
+                    webp_image_io = io.BytesIO()
+                    image.save(webp_image_io, 'webp')
+                    # Check processed file
+                    if validate_file(webp_image_io):
+                        webp_image_io.seek(0)
+                        await bot.send_sticker(chat_id=message.chat.id, sticker=webp_image_io)
+            except Exception as e:
+                logging.error("Error processing image: " + str(e))
+        else:
+            logging.error("Invalid file id")
     else:
-        ratio = max_size / float(height)
-        new_size = (int(width * ratio), max_size)
-    image = image.resize(new_size, Image.LANCZOS)
-    # Convert image to WebP
-    webp_image_io = io.BytesIO()
-    image.save(webp_image_io, "WebP")
-    webp_image_io.seek(0)
-    await bot.send_sticker(chat_id=message.chat.id, sticker=webp_image_io)
+        logging.error("Rate limit exceeded for user: " + str(message.from_user.id))
+
+
+def validate_file_id(file_id):
+    # Check if file_id is in the correct format
+    if isinstance(file_id, str) and len(file_id) == 82:
+        return True
+    else:
+        return False
+
+
+def validate_file(file):
+    # Check if file is in the correct format (WebP)
+    try:
+        image = Image.open(file)
+        if image.format == 'WEBP':
+            return True
+        else:
+            return False
+    except IOError:
+        return False
+
+
+def rate_limiter(user_id):
+    global request_counts
+    # Get the current minute
+    current_minute = time.time() // 60
+    # If the user has not made any requests in the current minute, allow the request
+    if user_id not in request_counts or request_counts[user_id][0] != current_minute:
+        request_counts[user_id] = [current_minute, 1]
+        return True
+    # If the user has made less than the maximum number of requests in the current minute, allow the request
+    elif request_counts[user_id][1] < RATE_LIMIT:
+        request_counts[user_id][1] += 1
+        return True
+    # If the user has made the maximum number of requests in the current minute, deny the request
+    else:
+        return False
 
 
 if __name__ == '__main__':
