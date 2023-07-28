@@ -27,10 +27,10 @@ async def convert_photo_to_sticker(message: types.Message):
     # Check rate limit
     if rate_limiter(message.from_user.id):
         # Validate file id
-        if validate_file_id(message.photo[-1].file_id):
-            photo_bytes_io = await bot.download_file_by_id(message.photo[-1].file_id)
+        image = await validate_file_id(message.photo[-1].file_id)
+        if image:
             try:
-                image = Image.open(photo_bytes_io)
+                image = Image.open(image)
                 # Check size before processing
                 if image.size < MAX_IMAGE_SIZE:
                     max_size = 512
@@ -51,17 +51,24 @@ async def convert_photo_to_sticker(message: types.Message):
                         await bot.send_sticker(chat_id=message.chat.id, sticker=webp_image_io)
             except Exception as e:
                 logging.error("Error processing image: " + str(e))
+                await bot.send_message(chat_id=message.chat.id,
+                                       text='Error processing image. Try again or another file.')
         else:
             logging.error("Invalid file id")
+            await bot.send_message(chat_id=message.chat.id, text='Invalid file id. Try again.')
+
     else:
         logging.error("Rate limit exceeded for user: " + str(message.from_user.id))
+        await bot.send_message(chat_id=message.chat.id,
+                               text='Rate limit exceeded. Try again later. \nLimit = 10 images per minute.')
 
 
-def validate_file_id(file_id):
-    # Check if file_id is in the correct format
-    if isinstance(file_id, str) and len(file_id) == 82:
-        return True
-    else:
+async def validate_file_id(file_id):
+    try:
+        image = await bot.download_file_by_id(file_id)
+        return image
+    except Exception as e:
+        logging.error("Invalid file id: " + str(e))
         return False
 
 
